@@ -98,9 +98,9 @@ def final_results(avg_return, volatility, sharpe, hit_rate,
 
 # =============================================================================
 # PAIR SELECTION — dual ADF + Johansen test
-#  Previously only ADF was used, prone to false positives.
+# FIX: Previously only ADF was used, prone to false positives.
 #      Now both tests must agree before a pair is accepted.
-#  n_jobs defaults to -1 (use all CPU cores) instead of 1.
+# FIX: n_jobs defaults to -1 (use all CPU cores) instead of 1.
 # =============================================================================
 
 def adf_for_pair(symbol_i, symbol_j, insample_px):
@@ -108,7 +108,7 @@ def adf_for_pair(symbol_i, symbol_j, insample_px):
     Run ADF on OLS residuals (Engle-Granger step 2) and Johansen test.
     Returns p-value, ADF test statistic, and whether Johansen also confirms.
 
-     beta/alpha estimated here are consistent with gen_signals —
+    FIX: beta/alpha estimated here are consistent with gen_signals —
          both regress log_px_j on log_px_i (Y on X).
     """
     # Replace zeros before log, forward-fill, then drop any remaining NaN/inf
@@ -150,8 +150,8 @@ def select_pairs(insample_px, significance_level=0.05, top_n=1, n_jobs=-1,
     """
     Select cointegrated pairs from an in-sample price window.
 
-     n_jobs=-1 uses all available CPU cores (was hard-coded to 1).
-     Dual-test filter — pair must pass ADF AND Johansen (configurable).
+    FIX: n_jobs=-1 uses all available CPU cores (was hard-coded to 1).
+    FIX: Dual-test filter — pair must pass ADF AND Johansen (configurable).
     """
     symbols = insample_px.columns.tolist()
     pairs   = list(combinations(symbols, 2))
@@ -199,9 +199,9 @@ def select_pairs(insample_px, significance_level=0.05, top_n=1, n_jobs=-1,
 
 # =============================================================================
 # SIGNAL GENERATION
-# Spread direction is now consistent with adf_for_pair
+# FIX: Spread direction is now consistent with adf_for_pair
 #      (spread = log_i - beta*log_j - alpha, matching Y=log_j, X=log_i OLS).
-#  gen_signals now accepts a price slice so rolling windows only see
+# FIX: gen_signals now accepts a price slice so rolling windows only see
 #      in-sample + current-window data (prevents subtle look-ahead).
 # =============================================================================
 
@@ -252,10 +252,10 @@ def gen_signals(px, pairs, window=90):
 
 # =============================================================================
 # PORTFOLIO CONSTRUCTION
-#  Positions are accumulated per asset across pairs with += instead of
+# FIX: Positions are accumulated per asset across pairs with += instead of
 #      direct assignment, so an asset appearing in multiple pairs no longer
 #      gets overwritten by the last pair processed.
-#  Stop-loss added — force exit if |z| > stop_loss_sigma (default 3).
+# FIX: Stop-loss added — force exit if |z| > stop_loss_sigma (default 3).
 # =============================================================================
 
 def gen_port(signal_df, pairs, all_columns, exit_threshold=0.5,
@@ -267,7 +267,7 @@ def gen_port(signal_df, pairs, all_columns, exit_threshold=0.5,
     entry_sigma     : |z| above this → open the trade.
     stop_loss_sigma : |z| above this → stop-loss exit (broken pair).
 
-     per-pair positions are stored separately then summed, so multiple
+    FIX: per-pair positions are stored separately then summed, so multiple
          pairs sharing an asset accumulate correctly instead of overwriting.
     """
     # One sub-DataFrame per pair, then sum at the end
@@ -287,22 +287,28 @@ def gen_port(signal_df, pairs, all_columns, exit_threshold=0.5,
         exit_   =  z.abs() <= exit_threshold
         stop_   =  z.abs() >  stop_loss_sigma
 
+        # Use NaN to distinguish "no signal yet" from "explicit exit (0)"
+        pp[asset_i] = np.nan
+        pp[asset_j] = np.nan
+
         pp.loc[long_j,  asset_i] = -1.0
         pp.loc[long_j,  asset_j] =  b[long_j]
 
         pp.loc[short_j, asset_i] =  1.0
         pp.loc[short_j, asset_j] = -b[short_j]
 
-        # Exit on mean-reversion or stop-loss
+        # Explicit exit: 0.0 stops the ffill from carrying the old position
         pp.loc[exit_ | stop_, asset_i] = 0.0
         pp.loc[exit_ | stop_, asset_j] = 0.0
 
+        # ffill per-pair BEFORE summing so each pair carries its own signal
+        # forward until an explicit exit overwrites it
+        pp = pp.ffill().fillna(0.0)
+
         pair_positions.append(pp)
 
-    # Sum positions across all pairs ( was direct assignment → overwrites)
+    # Sum across all pairs then normalise
     pos = sum(pair_positions)
-
-    pos = pos.ffill()
     abs_sum = pos.abs().sum(axis=1).replace(0, np.nan)
     pos = pos.divide(abs_sum, axis=0).fillna(0.0)
     return pos
@@ -310,11 +316,11 @@ def gen_port(signal_df, pairs, all_columns, exit_threshold=0.5,
 
 # =============================================================================
 # BACKTEST
-#  full_portfolio is now re-initialised inside the threshold loop so
+# FIX: full_portfolio is now re-initialised inside the threshold loop so
 #      each threshold starts with a clean slate (was shared across iterations).
-#  tcost_bps reduced from 20 to 10 bps (more realistic for daily crypto).
-#  duration() is called on the equity curve (cumprod) not cumsum.
-#  gen_signals receives only price data up to insample_end + window
+# FIX: tcost_bps reduced from 20 to 10 bps (more realistic for daily crypto).
+# FIX: duration() is called on the equity curve (cumprod) not cumsum.
+# FIX: gen_signals receives only price data up to insample_end + window
 #      so future prices cannot contaminate rolling beta estimation.
 # =============================================================================
 
@@ -345,7 +351,7 @@ def run_backtest(crypto_px, coins_ret,
     for i, thr in enumerate(thresholds):
         print(f"\n── Threshold {thr} ──────────────────────────────")
 
-        #  re-initialise for every threshold
+        # FIX: re-initialise for every threshold
         full_portfolio = pd.DataFrame(
             index=crypto_px.loc[start_of_oos:].index,
             columns=crypto_px.columns,
@@ -369,7 +375,7 @@ def run_backtest(crypto_px, coins_ret,
             if not updated_pairs:
                 continue
 
-            #  pass only the price data needed for rolling estimation
+            # FIX: pass only the price data needed for rolling estimation
             # (in-sample + out-of-sample window to warm up rolling stats)
             px_slice = crypto_px.loc[insample_start:end_date]
             signal_df = gen_signals(px_slice, updated_pairs, window=signal_window)
@@ -421,7 +427,7 @@ if __name__ == '__main__':
         end_of_insample='2018-12-31',
         thresholds=[0.1, 0.2, 0.5, 0.7],
         signal_window=90,
-        tcost_bps=10,          #  was 20 bps
+        tcost_bps=10,          # FIX: was 20 bps
     )
 
     print("\n── Metrics across thresholds ──")
@@ -465,7 +471,7 @@ if __name__ == '__main__':
     plt.show()
     print(f"Max drawdown: {dd.min():.2f}%")
 
-    #  duration() expects an equity curve, not a return cumsum
+    # FIX: duration() expects an equity curve, not a return cumsum
     equity_curve = (1 + full_sample_ret).cumprod()
     ddd = duration(equity_curve)
     ddd.plot(title='Drawdown Duration (days)')
